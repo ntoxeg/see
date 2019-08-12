@@ -1,6 +1,6 @@
 import argparse
 
-from evaluation.evaluator import FSNSEvaluator, SVHNEvaluator, TextRecognitionEvaluator
+from .evaluation.evaluator import FSNSEvaluator, SVHNEvaluator, TextRecognitionEvaluator
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tool that evaluates a trained model on a chosen test set (either FSNS or SVHN)")

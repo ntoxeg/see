@@ -5,6 +5,7 @@ import os
 
 import json
 from collections import OrderedDict
+from dataclasses import dataclass
 
 import chainer
 from pprint import pprint
@@ -15,7 +16,7 @@ import numpy as np
 from PIL import Image
 from chainer import configuration
 
-from utils.datatypes import Size
+from see.utils.datatypes import Size
 
 
 def get_class_and_module(log_data):
@@ -61,7 +62,7 @@ def build_fusion_net(fusion_net_class, localization_net, recognition_net):
     return fusion_net_class(localization_net, recognition_net)
 
 
-def create_network(args, log_data):
+def create_network(args, log_data, target_shape):
     # Step 1: build network
     localization_net_class_name, localization_module_name = get_class_and_module(log_data['localization_net'])
     module = load_module(os.path.abspath(os.path.join(args.model_dir, localization_module_name)))
@@ -124,6 +125,69 @@ def extract_bbox(bbox, image_size, target_shape, xp):
 
     return top_left, bottom_right
 
+@dataclass
+class Args:
+    model_dir: str = "/home/adrian/models/see-textrec/model"
+    snapshot_name: str = "model_190000.npz"
+    image_path: str = None
+    char_map: str = "/home/adrian/projects/see/datasets/textrec/ctc_char_map.json"
+    gpu: int = 0
+    log_name: str = "log"
+    dropout_ratio: float = 0.5
+    blank_symbol: int = 0
+    timesteps: int = 23
+    num_labels: int = 1
+
+def main(args):
+        # open log and extract meta information
+        with open(os.path.join(args.model_dir, args.log_name)) as the_log:
+            log_data = json.load(the_log)[0]
+
+        target_shape = Size._make(log_data['target_size'])
+        image_size = Size._make(log_data['image_size'])
+
+        xp = chainer.cuda.cupy if args.gpu >= 0 else np
+        network = create_network(args, log_data, target_shape)
+
+        # load weights
+        with np.load(os.path.join(args.model_dir, args.snapshot_name)) as f:
+            chainer.serializers.NpzDeserializer(f).load(network)
+
+        # load char map
+        with open(args.char_map) as the_map:
+            char_map = json.load(the_map)
+
+        # load image
+        image = load_image(args.image_path, xp, image_size)
+        with configuration.using_config('train', False):
+            predictions, crops, grids = network(image[xp.newaxis, ...])
+
+        # extract class scores for each word
+        words = OrderedDict({})
+
+        predictions = F.concat([F.expand_dims(prediction, axis=0) for prediction in predictions], axis=0)
+
+        classification = F.softmax(predictions, axis=2)
+        classification = classification.data
+        classification = xp.argmax(classification, axis=2)
+        classification = xp.transpose(classification, (1, 0))
+
+        word = strip_prediction(classification.astype(np.int32), xp, args.blank_symbol)[0]
+
+        word = "".join(map(lambda x: chr(char_map[str(x)]), word))
+
+        bboxes = []
+        for bbox in grids[0]:
+            bbox = extract_bbox(bbox, image_size, target_shape, xp)
+            bboxes.append(OrderedDict({
+                'top_left': bbox[0],
+                'bottom_right': bbox[1]
+            }))
+        words[word] = bboxes
+
+        # pprint(words)
+        return words
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tool that loads model and predicts on a given image")
@@ -143,54 +207,4 @@ if __name__ == "__main__":
     # max number of characters per word
     args.num_labels = 1
 
-    # open log and extract meta information
-    with open(os.path.join(args.model_dir, args.log_name)) as the_log:
-        log_data = json.load(the_log)[0]
-
-    target_shape = Size._make(log_data['target_size'])
-    image_size = Size._make(log_data['image_size'])
-
-    xp = chainer.cuda.cupy if args.gpu >= 0 else np
-    network = create_network(args, log_data)
-
-    # load weights
-    with np.load(os.path.join(args.model_dir, args.snapshot_name)) as f:
-        chainer.serializers.NpzDeserializer(f).load(network)
-
-    # load char map
-    with open(args.char_map) as the_map:
-        char_map = json.load(the_map)
-
-    # load image
-    image = load_image(args.image_path, xp, image_size)
-    with configuration.using_config('train', False):
-        predictions, crops, grids = network(image[xp.newaxis, ...])
-
-    # extract class scores for each word
-    words = OrderedDict({})
-
-    predictions = F.concat([F.expand_dims(prediction, axis=0) for prediction in predictions], axis=0)
-
-    classification = F.softmax(predictions, axis=2)
-    classification = classification.data
-    classification = xp.argmax(classification, axis=2)
-    classification = xp.transpose(classification, (1, 0))
-
-    word = strip_prediction(classification, xp, args.blank_symbol)[0]
-
-    word = "".join(map(lambda x: chr(char_map[str(x)]), word))
-
-    bboxes = []
-    for bbox in grids[0]:
-        bbox = extract_bbox(bbox, image_size, target_shape, xp)
-        bboxes.append(OrderedDict({
-            'top_left': bbox[0],
-            'bottom_right': bbox[1]
-        }))
-    words[word] = bboxes
-
-    pprint(words)
-
-
-
-
+    main(args)

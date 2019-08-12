@@ -12,13 +12,13 @@ from chainer import cuda
 import chainer.functions as F
 from chainer.training import extensions
 
-from datasets.mnist_dataset import MNISTDataset, HDF5MnistDataset, FileBasedMNISTDataset
-from insights.bbox_plotter import BBOXPlotter
-from models.mnist import MNISTNet, MNISTLocalizationNet, MNISTRecognitionNet
-from models.text_detection_net import SmallLocalizationNet, TextDetectionNet
-from utils.datatypes import Size
-from utils.multi_accuracy_classifier import Classifier
-from utils.train_utils import add_default_arguments, get_fast_evaluator, AttributeUpdater, get_trainer, \
+from .datasets.mnist_dataset import MNISTDataset, HDF5MnistDataset, FileBasedMNISTDataset
+from .insights.bbox_plotter import BBOXPlotter
+from .models.mnist import MNISTNet, MNISTLocalizationNet, MNISTRecognitionNet
+from .models.text_detection_net import SmallLocalizationNet, TextDetectionNet
+from .utils.datatypes import Size
+from .utils.multi_accuracy_classifier import Classifier
+from .utils.train_utils import add_default_arguments, get_fast_evaluator, AttributeUpdater, get_trainer, \
     concat_and_pad_examples, TwoStateLearningRateShifter
 
 

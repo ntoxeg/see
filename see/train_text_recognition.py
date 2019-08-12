@@ -11,17 +11,17 @@ from chainer.iterators import MultiprocessIterator
 from chainer.training import extensions
 from chainer.training.updaters import MultiprocessParallelUpdater
 
-from commands.interactive_train import open_interactive_prompt
-from datasets.file_dataset import TextRecFileDataset
-from datasets.sub_dataset import split_dataset, split_dataset_n_random
-from insights.text_rec_bbox_plotter import TextRecBBOXPlotter
-from metrics.textrec_metrics import TextRecSoftmaxMetrics
-from models.ic_stn import InverseCompositionalLocalizationNet
-from models.text_recognition import TextRecognitionNet, TextRecNet
-from utils.baby_step_curriculum import BabyStepCurriculum
-from utils.datatypes import Size
-from utils.multi_accuracy_classifier import Classifier
-from utils.train_utils import add_default_arguments, get_fast_evaluator, get_trainer, \
+from .commands.interactive_train import open_interactive_prompt
+from .datasets.file_dataset import TextRecFileDataset
+from .datasets.sub_dataset import split_dataset, split_dataset_n_random
+from .insights.text_rec_bbox_plotter import TextRecBBOXPlotter
+from .metrics.textrec_metrics import TextRecSoftmaxMetrics
+from .models.ic_stn import InverseCompositionalLocalizationNet
+from .models.text_recognition import TextRecognitionNet, TextRecNet
+from .utils.baby_step_curriculum import BabyStepCurriculum
+from .utils.datatypes import Size
+from .utils.multi_accuracy_classifier import Classifier
+from .utils.train_utils import add_default_arguments, get_fast_evaluator, get_trainer, \
     get_concat_and_pad_examples, get_definition_filepath, get_definition_filename
 
 if __name__ == "__main__":

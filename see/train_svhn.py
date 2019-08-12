@@ -11,24 +11,17 @@ import shutil
 from chainer.training.updaters import MultiprocessParallelUpdater
 from chainer.training import extensions
 
-from commands.interactive_train import open_interactive_prompt
-from datasets.file_dataset import FileBasedDataset
-from datasets.sub_dataset import split_dataset_random, split_dataset, split_dataset_n_random
-from insights.bbox_plotter import BBOXPlotter
-from insights.fsns_bbox_plotter import FSNSBBOXPlotter
-from metrics.ctc_metrics import CTCMetrics
-from metrics.lstm_per_step_metrics import PerStepLSTMMetric
-from metrics.softmax_metrics import SoftmaxMetrics
-from models.fsns import FSNSNet, FSNSSoftmaxRecognitionNet, \
-    FSNSSingleSTNLocalizationNet, FSNSSoftmaxRecognitionResNet, FSNSResnetReuseNet
-from models.fsns_resnet import FSNSRecognitionResnet
-from optimizers.multi_net_optimizer import MultiNetOptimizer
-from utils.baby_step_curriculum import BabyStepCurriculum
-from utils.datatypes import Size
-from utils.intelligent_attribute_shifter import IntelligentAttributeShifter
-from utils.multi_accuracy_classifier import Classifier
-from utils.train_utils import add_default_arguments, get_fast_evaluator, get_trainer, \
-    concat_and_pad_examples, get_definition_filename, get_definition_filepath
+from .commands.interactive_train import open_interactive_prompt
+from .datasets.file_dataset import FileBasedDataset
+from .datasets.sub_dataset import split_dataset, split_dataset_n_random
+from .insights.svhn_bbox_plotter import SVHNBBoxPlotter
+from .metrics.svhn_softmax_metrics import SVHNSoftmaxMetrics
+from .models.svhn import SVHNLocalizationNet, SVHNRecognitionNet, SVHNNet
+from .utils.baby_step_curriculum import BabyStepCurriculum
+from .utils.datatypes import Size
+from .utils.multi_accuracy_classifier import Classifier
+from .utils.train_utils import add_default_arguments, get_fast_evaluator, get_trainer, \
+    concat_and_pad_examples
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tool to train a text detection network based on Spatial Transformers")
@@ -56,14 +49,13 @@ if __name__ == "__main__":
     parser.add_argument("--test-image", help='path to an image that should be used by BBoxPlotter')
     parser = add_default_arguments(parser)
     args = parser.parse_args()
-    args.is_original_fsns = True
 
-    image_size = Size(width=150, height=150)
-    target_shape = Size(width=100, height=75)
+    image_size = Size(width=200, height=200)
+    target_shape = Size(width=50, height=50)
 
     # attributes that need to be adjusted, once the Curriculum decides to use
     # a more difficult dataset
-    # this is a 'map' of attribute name to a path in the trainer object
+    # this is a 'map' of attribute name to path in trainer object
     attributes_to_adjust = [
         ('num_timesteps', ['predictor', 'localization_net']),
         ('num_timesteps', ['predictor', 'recognition_net']),
@@ -71,7 +63,6 @@ if __name__ == "__main__":
         ('num_labels', ['predictor', 'recognition_net']),
     ]
 
-    # create train curriculum
     curriculum = BabyStepCurriculum(
         args.dataset_specification,
         FileBasedDataset,
@@ -81,10 +72,12 @@ if __name__ == "__main__":
         trigger=(args.test_interval, 'iteration'),
         min_delta=0.1,
     )
-    train_dataset, validation_dataset = curriculum.load_dataset(0)
 
-    # the metrics object calculates the loss
-    metrics = SoftmaxMetrics(
+    train_dataset, validation_dataset = curriculum.load_dataset(0)
+    train_dataset.resize_size = image_size
+    validation_dataset.resize_size = image_size
+
+    metrics = SVHNSoftmaxMetrics(
         args.blank_label,
         args.char_map,
         train_dataset.num_timesteps,
@@ -92,35 +85,22 @@ if __name__ == "__main__":
         area_loss_factor=args.area_factor,
         aspect_ratio_loss_factor=args.aspect_factor,
         area_scaling_factor=args.area_scale_factor,
-        uses_original_data=args.is_original_fsns,
     )
 
-    # create the localization net
-    localization_net = FSNSSingleSTNLocalizationNet(
+    localization_net = SVHNLocalizationNet(
         args.dropout_ratio,
         train_dataset.num_timesteps,
         zoom=args.zoom,
-        use_dropout=args.use_dropout,
     )
-
-    # create the recognition net
-    recognition_net = FSNSRecognitionResnet(
+    recognition_net = SVHNRecognitionNet(
         target_shape,
         train_dataset.get_label_length(train_dataset.num_timesteps, check_length=False),
         train_dataset.num_timesteps,
-        uses_original_data=args.is_original_fsns,
-        use_dropout=False,
-        dropout_ratio=args.dropout_ratio,
-        use_blstm=True,
     )
-    net = FSNSNet(localization_net, recognition_net, uses_original_data=args.is_original_fsns)
-    model = Classifier(
-        net,
-        ('accuracy',),
-        lossfun=metrics.calc_loss,
-        accfun=metrics.calc_accuracy,
-        provide_label_during_forward=False
-    )
+    net = SVHNNet(localization_net, recognition_net)
+
+    model = Classifier(net, ('accuracy',), lossfun=metrics.calc_loss, accfun=metrics.calc_accuracy,
+                       provide_label_during_forward=False)
 
     if args.resume is not None:
         with np.load(args.resume) as f:
@@ -143,17 +123,15 @@ if __name__ == "__main__":
                 else:
                     chainer.serializers.NpzDeserializer(f).load(net)
 
-    base_optimizer = chainer.optimizers.Adam(alpha=args.learning_rate)
-    optimizer = base_optimizer
+    optimizer = chainer.optimizers.Adam(alpha=args.learning_rate)
     optimizer.setup(model)
     optimizer.add_hook(chainer.optimizer.WeightDecay(0.0005))
     optimizer.add_hook(chainer.optimizer.GradientClipping(2))
 
-    # freeze localization net
+    # freeze localization net if user wants to do that
     if args.freeze_localization:
         localization_net.disable_update()
 
-    # if we are using more than one GPU, we need to evenly split the datasets
     if len(args.gpus) > 1:
         gpu_datasets = split_dataset_n_random(train_dataset, len(args.gpus))
         if not len(gpu_datasets[0]) == len(gpu_datasets[-1]):
@@ -165,7 +143,6 @@ if __name__ == "__main__":
     train_iterators = [chainer.iterators.MultiprocessIterator(dataset, args.batch_size) for dataset in gpu_datasets]
     validation_iterator = chainer.iterators.MultiprocessIterator(validation_dataset, args.batch_size, repeat=False)
 
-    # use the MultiProcessParallelUpdater in order to harness the full power of data parallel computation
     updater = MultiprocessParallelUpdater(train_iterators, optimizer, devices=args.gpus)
 
     log_dir = os.path.join(args.log_dir, "{}_{}".format(datetime.datetime.now().isoformat(), args.log_name))
@@ -176,27 +153,26 @@ if __name__ == "__main__":
         os.makedirs(log_dir, exist_ok=True)
     shutil.copy(__file__, log_dir)
 
-    # backup all necessary configuration params
+    # log all necessary configuration params
     report = {
         'log_dir': log_dir,
         'image_size': image_size,
         'target_size': target_shape,
-        'localization_net': [localization_net.__class__.__name__, get_definition_filename(localization_net)],
-        'recognition_net': [recognition_net.__class__.__name__, get_definition_filename(recognition_net)],
-        'fusion_net': [net.__class__.__name__, get_definition_filename(net)],
+        'localization_net': localization_net.__class__.__name__,
+        'recognition_net': recognition_net.__class__.__name__,
+        'fusion_net': net.__class__.__name__,
     }
 
     for argument in filter(lambda x: not x.startswith('_'), dir(args)):
         report[argument] = getattr(args, argument)
 
-    # callback that logs report (is called by trainer extension that writes the train log)
+    # callback that logs report
     def log_postprocess(stats_cpu):
         # only log further information once and not every time we log our progress
         if stats_cpu['epoch'] == 0 and stats_cpu['iteration'] == args.log_interval:
             stats_cpu.update(report)
 
 
-    # all fields that shall be shown to the user while training
     fields_to_print = [
         'epoch',
         'iteration',
@@ -209,7 +185,6 @@ if __name__ == "__main__":
         'validation/main/accuracy',
     ]
 
-    # fast evaluator only runs for max. 200 iteration
     FastEvaluator = get_fast_evaluator((args.test_interval, 'iteration'))
     evaluator = (
         FastEvaluator(
@@ -222,7 +197,6 @@ if __name__ == "__main__":
         ),
         (args.test_interval, 'iteration')
     )
-    # epoch validator validates model on complete validation set
     epoch_validation_iterator = copy.copy(validation_iterator)
     epoch_validation_iterator._repeat = False
     epoch_evaluator = (
@@ -236,8 +210,7 @@ if __name__ == "__main__":
     )
 
     model_snapshotter = (
-        extensions.snapshot_object(net, 'model_{.updater.iteration}.npz'), (args.snapshot_interval, 'iteration')
-    )
+        extensions.snapshot_object(net, 'model_{.updater.iteration}.npz'), (args.snapshot_interval, 'iteration'))
 
     # bbox plotter test
     if not args.test_image:
@@ -245,10 +218,7 @@ if __name__ == "__main__":
     else:
         test_image = train_dataset.load_image(args.test_image)
 
-    # BBOXPlotter performs a forward pass with current state of the model at each iteration, thus enabling
-    # the user to inspect the current progress of the model
-    bbox_plotter_class = BBOXPlotter if not args.is_original_fsns else FSNSBBOXPlotter
-    bbox_plotter = (bbox_plotter_class(
+    bbox_plotter = (SVHNBBoxPlotter(
         test_image,
         os.path.join(log_dir, 'boxes'),
         target_shape,
@@ -258,7 +228,6 @@ if __name__ == "__main__":
         visualization_anchors=[["localization_net", "vis_anchor"], ["recognition_net", "vis_anchor"]]
     ), (1, 'iteration'))
 
-    # create the trainer object and inject all extensions
     trainer = get_trainer(
         net,
         updater,
@@ -270,24 +239,20 @@ if __name__ == "__main__":
         print_interval=args.log_interval,
         extra_extensions=(
             evaluator,
-            epoch_evaluator,
+            # epoch_evaluator,
             model_snapshotter,
             bbox_plotter,
             (curriculum, (args.test_interval, 'iteration')),
+            # lr_shifter,
         ),
         postprocess=log_postprocess,
         do_logging=args.no_log,
-        model_files=[
-            get_definition_filepath(localization_net),
-            get_definition_filepath(recognition_net),
-            get_definition_filepath(net),
-        ]
     )
 
-    # create interactive prompt that can be used to issue commands while the training is in progress
     open_interactive_prompt(
         bbox_plotter=bbox_plotter[0],
         curriculum=curriculum,
+        # lr_shifter=lr_shifter[0],
     )
 
     trainer.run()
